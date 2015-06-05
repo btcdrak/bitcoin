@@ -187,7 +187,7 @@ bool CBlockTreeDB::ReadAddrIndex(uint160 addrid, std::vector<CExtDiskTxPos> &lis
         CHashWriter ss(SER_GETHASH, 0);
         ss << salt;
         ss << addrid;
-        lookupid = ss.GetHash().GetLow64();
+        lookupid = UintToArith256(ss.GetHash()).GetLow64();
     }
     CDataStream ssKeySet(SER_DISK, CLIENT_VERSION);
     ssKeySet << make_pair('a', lookupid);
@@ -219,7 +219,7 @@ bool CBlockTreeDB::AddAddrIndex(const std::vector<std::pair<uint160, CExtDiskTxP
         CHashWriter ss(SER_GETHASH, 0);
         ss << salt;
         ss << it->first;
-        batch.Write(make_pair(make_pair('a', ss.GetHash().GetLow64()), it->second), FLATDATA(foo));
+        batch.Write(make_pair(make_pair('a', UintToArith256(ss.GetHash()).GetLow64()), it->second), FLATDATA(foo));
     }
     return WriteBatch(batch, true);
 }

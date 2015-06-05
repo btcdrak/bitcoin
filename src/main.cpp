@@ -1082,16 +1082,16 @@ bool ReadTransaction(CTransaction& tx, const CDiskTxPos &pos, uint256 &hashBlock
 }
 
 bool FindTransactionsByDestination(const CTxDestination &dest, std::set<CExtDiskTxPos> &setpos) {
-    uint160 addrid = 0;
+    uint160 addrid;
     const CKeyID *pkeyid = boost::get<CKeyID>(&dest);
     if (pkeyid)
         addrid = static_cast<uint160>(*pkeyid);
-    if (!addrid) {
+    if (addrid.IsNull()) {
         const CScriptID *pscriptid = boost::get<CScriptID>(&dest);
         if (pscriptid)
             addrid = static_cast<uint160>(*pscriptid);
     }
-    if (!addrid)
+    if (addrid.IsNull())
         return false;
 
     LOCK(cs_main);
@@ -1828,7 +1828,7 @@ void static BuildAddrIndex(const CScript &script, const CExtDiskTxPos &pos, std:
     while (pc < pend) {
         script.GetOp(pc, opcode, data);
         if (0 <= opcode && opcode <= OP_PUSHDATA4 && data.size() >= 8) { // data element
-            uint160 addrid = 0;
+            uint160 addrid;
             if (data.size() <= 20) {
                 memcpy(&addrid, &data[0], data.size());
             } else {
@@ -2012,12 +2012,12 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     }
 
     if (fTxIndex)
-        if (!pblocktree->WriteTxIndex(vPos))
+        if (!pblocktree->WriteTxIndex(vPosTxid))
             return AbortNode(state, "Failed to write transaction index");
     
     if (fAddrIndex)
         if (!pblocktree->AddAddrIndex(vPosAddrid))
-            return state.Abort(_("Failed to write address index"));
+            return AbortNode(state, "Failed to write address index");
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());

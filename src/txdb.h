@@ -17,6 +17,7 @@
 class CBlockFileInfo;
 class CBlockIndex;
 struct CDiskTxPos;
+struct CExtDiskTxPos;
 class uint256;
 
 //! -dbcache default (MiB)
