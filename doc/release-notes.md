@@ -44,6 +44,36 @@ supported and may break as soon as the older version attempts to reindex.
 This does not affect wallet forward or backward compatibility. There are no
 known problems when downgrading from 0.11.x to 0.10.x.
 
+Important information
+======================
+
+Transaction flooding
+---------------------
+
+At the time of this release, the P2P network is being flooded with low-fee
+transactions. This causes a ballooning of the mempool size.
+
+If this growth of the mempool causes problematic memory use on your node, it is
+possible to change a few configuration options to work around this. The growth
+of the mempool can be monitored with the RPC command `getmempoolinfo`.
+
+One is to increase the minimum transaction relay fee `minrelaytxfee`, which
+defaults to 0.00001. This will cause transactions with fewer BTC/kB fee to be
+rejected, and thus fewer transactions entering the mempool.
+
+The other is to restrict the relaying of free transactions with
+`limitfreerelay`. This option sets the number of kB/minute at which
+free transactions (with enough priority) will be accepted. It defaults to 15.
+Reducing this number reduces the speed at which the mempool can grow due
+to free transactions.
+
+For example, add the following to `bitcoin.conf`:
+
+    minrelaytxfee=0.00005 
+    limitfreerelay=5
+
+More robust solutions are being worked on for a follow-up release.
+
 Notable changes
 ===============
 
@@ -125,11 +155,22 @@ There have been many changes in this release to reduce the default memory usage
 of a node, among which:
 
 - Accurate UTXO cache size accounting (#6102); this makes the option `-dbcache`
-  precise, where is did a gross underestimation of memory usage before
+  precise where this grossly underestimated memory usage before
 - Reduce size of per-peer data structure (#6064 and others); this increases the
   number of connections that can be supported with the same amount of memory
 - Reduce the number of threads (#5964, #5679); lowers the amount of (esp.
   virtual) memory needed
+
+Fee estimation changes
+----------------------
+
+This release improves the algorithm used for fee estimation.  Previously, -1
+was returned when there was insufficient data to give an estimate.  Now, -1
+will also be returned when there is no fee or priority high enough for the
+desired confirmation target. In those cases, it can help to ask for an estimate
+for a higher target number of blocks. It is not uncommon for there to be no
+fee or priority high enough to be reliably (85%) included in the next block and
+for this reason, the default for `-txconfirmtarget=n` has changed from 1 to 2.
 
 Privacy: Disable wallet transaction broadcast
 ----------------------------------------------
@@ -150,6 +191,8 @@ transaction (re)broadcast:
 
 One such application is selective Tor usage, where the node runs on the normal
 internet but transactions are broadcasted over Tor.
+
+For an example script see [bitcoin-submittx](https://github.com/laanwj/bitcoin-submittx).
 
 Privacy: Stream isolation for Tor
 ----------------------------------
@@ -205,6 +248,7 @@ git merge commit are mentioned.
 - #5911 `b6ea3bc` privacy: Stream isolation for Tor (on by default, use `-proxyrandomize=0` to disable)
 - #5863 `c271304` Add autoprune functionality (`-prune=<size>`)
 - #6153 `0bcf04f` Parameter interaction: disable upnp if -proxy set
+- #6274 `4d9c7fe` Add option `-alerts` to opt out of alert system
 
 ### Block and transaction handling
 - #5367 `dcc1304` Do all block index writes in a batch
@@ -226,6 +270,10 @@ git merge commit are mentioned.
 - #6129 `2a82298` Bug fix for clearing fCheckForPruning
 - #5947 `e9af4e6` Alert if it is very likely we are getting a bad chain
 - #6203 `c00ae64` Remove P2SH coinbase flag, no longer interesting
+- #5985 `37b4e42` Fix removing of orphan transactions
+- #6221 `6cb70ca` Prune: Support noncontiguous block files
+- #6256 `fce474c` Use best header chain timestamps to detect partitioning
+- #6233 `a587606` Advance pindexLastCommonBlock for blocks in chainActive
 
 ### P2P protocol and network code
 - #5507 `844ace9` Prevent DOS attacks on in-flight data structures
@@ -241,6 +289,7 @@ git merge commit are mentioned.
 - #5976 `9f7809f` Reduce download timeouts as blocks arrive
 - #6172 `b4bbad1` Ignore getheaders requests when not synced
 - #5875 `304892f` Be stricter in processing unrequested blocks
+- #6333 `41bbc85` Hardcoded seeds update June 2015
 
 ### Validation
 - #5143 `48e1765` Implement BIP62 rule 6
@@ -259,6 +308,14 @@ git merge commit are mentioned.
 - #5510 `7c3fbc3` Big endian support
 - #5149 `c7abfa5` Add script to verify all merge commits are signed
 - #6082 `7abbb7e` qt: disable qt tests when one of the checks for the gui fails
+- #6244 `0401aa2` configure: Detect (and reject) LibreSSL
+- #6269 `95aca44` gitian: Use the new bitcoin-detached-sigs git repo for OSX signatures
+- #6285 `ef1d506` Fix scheduler build with some boost versions.
+- #6280 `25c2216` depends: fix Boost 1.55 build on GCC 5
+- #6303 `b711599` gitian: add a gitian-win-signer descriptor
+- #6246 `8ea6d37` Fix build on FreeBSD
+- #6282 `daf956b` fix crash on shutdown when e.g. changing -txindex and abort action
+- #6354 `bdf0d94` Gitian windows signing normalization
 
 ### Wallet
 - #2340 `811c71d` Discourage fee sniping with nLockTime
@@ -271,6 +328,7 @@ git merge commit are mentioned.
 - #5511 `23c998d` Sort pending wallet transactions before reaccepting
 - #6126 `26e08a1` Change default nTxConfirmTarget to 2
 - #6183 `75a4d51` Fix off-by-one error w/ nLockTime in the wallet
+- #6276 `c9fd907` Fix getbalance * 0
 
 ### GUI
 - #5219 `f3af0c8` New icons
@@ -353,6 +411,9 @@ git merge commit are mentioned.
 - #6186 `182686c` Fix two problems in CSubnet parsing
 - #6174 `df992b9` doc: add translation strings policy
 - #6210 `dfdb6dd` build: disable optional use of gmp in internal secp256k1 build
+- #6264 `94cd705` Remove translation for -help-debug options
+- #6286 `3902c15` Remove berkeley-db4 workaround in MacOSX build docs
+- #6319 `3f8fcc9` doc: update mailing list address
 
 Credits
 =======
@@ -391,6 +452,7 @@ Thanks to everyone who directly contributed to this release:
 - Gregory Maxwell
 - Heath
 - Ivan Pustogarov
+- Jacob Welsh
 - Jameson Lopp
 - Jason Lewicki
 - Jeff Garzik
@@ -419,6 +481,7 @@ Thanks to everyone who directly contributed to this release:
 - Pieter Wuille
 - pstratem
 - randy-waterhouse
+- rion
 - Rob Van Mieghem
 - Ross Nicoll
 - Ruben de Vries
@@ -429,6 +492,7 @@ Thanks to everyone who directly contributed to this release:
 - Suhas Daftuar
 - svost
 - Thomas Zander
+- Tom Harding
 - UdjinM6
 - Vitalii Demianets
 - Wladimir J. van der Laan
