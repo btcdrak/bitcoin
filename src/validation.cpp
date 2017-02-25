@@ -6,6 +6,7 @@
 #include "validation.h"
 
 #include "arith_uint256.h"
+#include "base58.h"
 #include "chainparams.h"
 #include "checkpoints.h"
 #include "checkqueue.h"
@@ -65,6 +66,7 @@ int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 bool fReindex = false;
 bool fTxIndex = false;
+bool fAddrIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -1035,6 +1037,43 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     return AcceptToMemoryPoolWithTime(pool, state, tx, fLimitFree, pfMissingInputs, GetTime(), plTxnReplaced, fOverrideMempoolLimit, nAbsurdFee);
 }
 
+bool ReadTransaction(CTransactionRef tx, const CDiskTxPos &pos, uint256 &hashBlock) {
+    CAutoFile file(OpenBlockFile(pos, true), SER_DISK, CLIENT_VERSION);
+    CBlockHeader header;
+    try {
+        file >> header;
+        fseek(file.Get(), pos.nTxOffset, SEEK_CUR);
+        file >> tx;
+    } catch (std::exception &e) {
+        return error("%s() : deserialize or I/O error", __PRETTY_FUNCTION__);
+    }
+    hashBlock = header.GetHash();
+    return true;
+}
+
+bool FindTransactionsByDestination(const CTxDestination &dest, std::set<CExtDiskTxPos> &setpos) {
+    uint160 addrid;
+    const CKeyID *pkeyid = boost::get<CKeyID>(&dest);
+    if (pkeyid)
+            addrid = static_cast<uint160>(*pkeyid);
+    if (addrid.IsNull()) {
+        const CScriptID *pscriptid = boost::get<CScriptID>(&dest);
+        if (pscriptid)
+            addrid = static_cast<uint160>(*pscriptid);
+        }
+    if (addrid.IsNull())
+        return false;
+
+    LOCK(cs_main);
+    if (!fAddrIndex)
+        return false;
+    std::vector<CExtDiskTxPos> vPos;
+    if (!pblocktree->ReadAddrIndex(addrid, vPos))
+        return false;
+    setpos.insert(vPos.begin(), vPos.end());
+    return true;
+}
+
 /** Return transaction in txOut, and if it was found inside a block, its hash is placed in hashBlock */
 bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus::Params& consensusParams, uint256 &hashBlock, bool fAllowSlow)
 {
@@ -1735,6 +1774,33 @@ static int64_t nTimeIndex = 0;
 static int64_t nTimeCallbacks = 0;
 static int64_t nTimeTotal = 0;
 
+// Index either: a) every data push >=8 bytes,  b) if no such pushes, the entire script
+void static BuildAddrIndex(const CScript &script, const CExtDiskTxPos &pos, std::vector<std::pair<uint160, CExtDiskTxPos> > &out)
+{
+    CScript::const_iterator pc = script.begin();
+    CScript::const_iterator pend = script.end();
+    std::vector<unsigned char> data;
+    opcodetype opcode;
+    bool fHaveData = false;
+    while (pc < pend) {
+        script.GetOp(pc, opcode, data);
+        if (0 <= opcode && opcode <= OP_PUSHDATA4 && data.size() >= 8) { // data element
+            uint160 addrid;
+            if (data.size() <= 20) {
+                memcpy(&addrid, &data[0], data.size());
+            } else {
+                addrid = Hash160(data);
+            }
+            out.push_back(std::make_pair(addrid, pos));
+            fHaveData = true;
+        }
+    }
+    if (!fHaveData) {
+        uint160 addrid = Hash160(script);
+        out.push_back(std::make_pair(addrid, pos));
+    }
+}
+
 bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex,
                   CCoinsViewCache& view, const CChainParams& chainparams, bool fJustCheck)
 {
@@ -1862,9 +1928,15 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     CAmount nFees = 0;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
-    CDiskTxPos pos(pindex->GetBlockPos(), GetSizeOfCompactSize(block.vtx.size()));
-    std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-    vPos.reserve(block.vtx.size());
+
+    CExtDiskTxPos pos(CDiskTxPos(pindex->GetBlockPos(), GetSizeOfCompactSize(block.vtx.size())), pindex->nHeight);
+    std::vector<std::pair<uint256, CDiskTxPos> > vPosTxid;
+    std::vector<std::pair<uint160, CExtDiskTxPos> > vPosAddrid;
+    if (fTxIndex)
+        vPosTxid.reserve(block.vtx.size());
+    if (fAddrIndex)
+        vPosAddrid.reserve(4*block.vtx.size());
+
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
@@ -1916,13 +1988,26 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
             control.Add(vChecks);
         }
 
+        if (fTxIndex)
+            vPosTxid.push_back(std::make_pair(tx.GetHash(), pos));
+        if (fAddrIndex) {
+            if (!tx.IsCoinBase()) {
+                BOOST_FOREACH(const CTxIn &txin, tx.vin) {
+                    CCoins coins;
+                    view.GetCoins(txin.prevout.hash, coins);
+                    BuildAddrIndex(coins.vout[txin.prevout.n].scriptPubKey, pos, vPosAddrid);
+                }
+            }
+            BOOST_FOREACH(const CTxOut &txout, tx.vout)
+            BuildAddrIndex(txout.scriptPubKey, pos, vPosAddrid);
+        }
+
         CTxUndo undoDummy;
         if (i > 0) {
             blockundo.vtxundo.push_back(CTxUndo());
         }
         UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
 
-        vPos.push_back(std::make_pair(tx.GetHash(), pos));
         pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
@@ -1963,8 +2048,12 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     }
 
     if (fTxIndex)
-        if (!pblocktree->WriteTxIndex(vPos))
+        if (!pblocktree->WriteTxIndex(vPosTxid))
             return AbortNode(state, "Failed to write transaction index");
+
+    if (fAddrIndex)
+        if (!pblocktree->AddAddrIndex(vPosAddrid))
+            return AbortNode(state, "Failed to write address index");
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
@@ -3579,6 +3668,9 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     pblocktree->ReadFlag("txindex", fTxIndex);
     LogPrintf("%s: transaction index %s\n", __func__, fTxIndex ? "enabled" : "disabled");
 
+    pblocktree->ReadFlag("addrindex", fAddrIndex);
+    LogPrintf("LoadBlockIndexDB(): address index %s\n", fAddrIndex ? "enabled" : "disabled");
+
     // Load pointer to end of best chain
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
     if (it == mapBlockIndex.end())
@@ -3830,6 +3922,8 @@ bool InitBlockIndex(const CChainParams& chainparams)
     // Use the provided setting for -txindex in the new database
     fTxIndex = GetBoolArg("-txindex", DEFAULT_TXINDEX);
     pblocktree->WriteFlag("txindex", fTxIndex);
+    fAddrIndex = GetBoolArg("-addrindex", DEFAULT_ADDRINDEX);
+    pblocktree->WriteFlag("addrindex", fAddrIndex);
     LogPrintf("Initializing databases...\n");
 
     // Only add the genesis block if not reindexing (in which case we reuse the one already on disk)
